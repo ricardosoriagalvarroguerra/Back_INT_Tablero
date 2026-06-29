@@ -4,7 +4,18 @@
 import pg from 'pg';
 import { env } from './env.ts';
 
-export const pool = new pg.Pool({ connectionString: env.databaseUrl, max: 8 });
+// SSL requerido al conectar por la URL pública de Railway/proveedores gestionados
+// (proxy o sslmode=require); innecesario en la red interna de Railway. Se activa
+// según la propia URL o forzando con PGSSL=true.
+const sslRequerido =
+  /[?&]sslmode=require|proxy\.rlwy\.net|\brender\.com|\bneon\.tech|\bsupabase\./.test(env.databaseUrl) ||
+  process.env.PGSSL === 'true';
+
+export const pool = new pg.Pool({
+  connectionString: env.databaseUrl,
+  max: 8,
+  ssl: sslRequerido ? { rejectUnauthorized: false } : undefined,
+});
 
 export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   text: string,
