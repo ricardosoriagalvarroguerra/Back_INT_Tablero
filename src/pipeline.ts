@@ -28,16 +28,17 @@ interface JobDef {
   requiere?: () => boolean;
 }
 
-// Orden: WB → IMF (el WEO prevalece en celdas solapadas); FRED (historia larga)
-// → Yahoo (pisa los últimos 2 años); OECD → ECB (el BCE prevalece en la zona euro).
+// Orden: rápidas primero (el tablero se completa en ~1 min) y lentas al final.
+// WB → IMF (el WEO prevalece en celdas solapadas); FRED (historia larga) → Yahoo
+// (pisa los últimos 2 años). OCDE no escribe zona euro, así que no pisa al BCE.
 export const JOBS: JobDef[] = [
   { fuente: 'worldbank', job: 'wb:macro', fn: ingestWorldBank },
   { fuente: 'imf', job: 'imf:weo', fn: ingestImf },
   { fuente: 'bis', job: 'bis:policy', fn: ingestBis },
   { fuente: 'fred', job: 'fred:mercados', fn: ingestFred },
   { fuente: 'yahoo', job: 'yahoo:markets', fn: ingestYahoo },
-  { fuente: 'oecd', job: 'oecd:yields', fn: ingestOecd },
   { fuente: 'ecb', job: 'ecb:fx+yields', fn: ingestEcb },
+  { fuente: 'oecd', job: 'oecd:yields', fn: ingestOecd },
   { fuente: 'comtrade', job: 'comtrade:trade', fn: ingestComtrade, lento: true },
   { fuente: 'gdelt', job: 'gdelt:geo', fn: ingestGdelt },
   { fuente: 'fred', job: 'fred:calendario', fn: ingestCalendar, requiere: has.fred },
@@ -74,6 +75,8 @@ export function runPipeline(op: OpcionesIngesta): Promise<JobResult[]> {
             continue;
           }
           out.push(await runJob(j.fuente, j.job, j.fn, op.disparador));
+          // el análisis se recalcula con cada fuente nueva (no espera al final de la corrida)
+          invalidarAnalisis();
         }
       } finally {
         await client.query('SELECT pg_advisory_unlock(hashtext($1))', ['tablero-int-ingesta']);

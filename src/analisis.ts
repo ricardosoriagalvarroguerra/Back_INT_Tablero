@@ -347,7 +347,7 @@ function seccionMonetario(D: Datos, Y: number) {
   const fed = filas.find((f) => f.iso3 === 'USA');
   const bce = filas.find((f) => f.iso3 === 'DEU');
   const lecturas: string[] = [];
-  lecturas.push(
+  if (vigentes.length) lecturas.push(
     `En 12 meses ${recortaron12.length} de ${vigentes.length} bancos centrales recortaron y ${subieron12.length} subieron. En los últimos 3 meses hubo ${subas3} subas y ${recortes3} recortes: fase de ${fase}.`,
   );
   if (fed) lecturas.push(`Fed: ${fmt(fed.tasa, 2)}% (${sg(fed.var12m, 2)} pp en 12 meses), tasa real ${sg(fed.real, 1)}% con inflación ${fmt(fed.inflacion)}% → postura ${fed.postura}.`);
@@ -528,7 +528,7 @@ function seccionExterno(D: Datos, Y: number) {
   const gemelos = filas.filter((f) => f.cuadrante === 'deficits-gemelos');
   const graves = gemelos.filter((f) => f.fiscal! < -3 && f.cuentaCorriente! < -3);
   const lecturas: string[] = [];
-  lecturas.push(`${gemelos.length} de ${filas.length} economías tienen déficits gemelos (fiscal y de cuenta corriente) en ${Y}.`);
+  if (filas.length) lecturas.push(`${gemelos.length} de ${filas.length} economías tienen déficits gemelos (fiscal y de cuenta corriente) en ${Y}.`);
   if (graves.length) lecturas.push(`Ambos déficits por encima del 3% del PIB: ${graves.map((f) => `${f.pais} (${fmt(f.fiscal)} / ${fmt(f.cuentaCorriente)})`).join(', ')}.`);
   const ext = filas.filter((f) => f.cuentaCorriente! < -4).sort((a, b) => a.cuentaCorriente! - b.cuentaCorriente!);
   if (ext.length) lecturas.push(`Mayor necesidad de financiamiento externo (cuenta corriente < −4% PIB): ${ext.map((f) => `${f.pais} ${fmt(f.cuentaCorriente)}%`).join(', ')}.`);
@@ -904,6 +904,8 @@ export async function construirAnalisis() {
   const corteMercado = [...D.mercado.values()].map((p) => ultimo(p)?.fecha ?? '').sort().pop() ?? null;
   return {
     generado: new Date().toISOString(),
+    /** false mientras la base está vacía o la primera ingesta va a medias */
+    completo: ciclo.agregados.length > 0 && monetario.bancos > 0 && condiciones.indicadores.length > 0,
     corte: { mercados: corteMercado, monetario: monetario.corte, weo: `FMI WEO · año base ${Y}` },
     tesis,
     semaforo,
@@ -924,8 +926,12 @@ export async function construirAnalisis() {
 
 // Caché en memoria: el análisis cambia sólo cuando hay ingesta nueva.
 let cache: { t: number; v: Awaited<ReturnType<typeof construirAnalisis>> } | null = null;
+/** ¿El análisis tiene lo esencial? (base recién aprovisionada o ingesta a medias → no) */
+export const analisisCompleto = (a: Awaited<ReturnType<typeof construirAnalisis>>) =>
+  a.ciclo.agregados.length > 0 && a.monetario.bancos > 0 && a.condiciones.indicadores.length > 0;
 export async function analisis() {
-  if (cache && Date.now() - cache.t < 10 * 60_000) return cache.v;
+  const ttl = cache && analisisCompleto(cache.v) ? 10 * 60_000 : 30_000;
+  if (cache && Date.now() - cache.t < ttl) return cache.v;
   const v = await construirAnalisis();
   cache = { t: Date.now(), v };
   return v;

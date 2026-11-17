@@ -4,7 +4,7 @@
 // de política): la provee el BIS (bis.ts), fuente autorizada.
 // Formato CSV: el JSON de SDMX 500ea en consultas multi-país; el CSV es estable.
 
-import { fetchText, throttle } from '../lib/http.ts';
+import { fetchText, throttle, plazo } from '../lib/http.ts';
 import { parseCsv } from './bis.ts';
 import { countryMaps, sourceId, upsertMarket, type MarketRow } from '../lib/ingest.ts';
 
@@ -25,18 +25,24 @@ export async function ingestOecd(): Promise<number> {
   // que el SDMX de OCDE responda 500 para todo el lote.
   const CHUNK = 1;
 
+  // Presupuesto total: el SDMX de OCDE puede colgarse; no debe frenar al resto de la ingesta.
+  const t = plazo(150_000);
   for (let i = 0; i < areas.length; i += CHUNK) {
+    if (t.vencido()) {
+      console.error(`    oecd: presupuesto de tiempo agotado; faltan ${areas.slice(i).join(', ')} (próxima corrida)`);
+      break;
+    }
     const chunk = areas.slice(i, i + CHUNK).join('+');
     const url = `${BASE}/${chunk}.M.IRLT......?startPeriod=2015-01&format=csvfile`;
     try {
       // El SDMX de OCDE devuelve 500 intermitentes: hasta 3 rondas con pausa creciente.
       let txt = '';
-      for (let intento = 0; intento < 3 && !txt; intento++) {
-        await throttle('sdmx.oecd.org', 1500 + intento * 5000); // buen ciudadano: evita auto-429
+      for (let intento = 0; intento < 2 && !txt; intento++) {
+        await throttle('sdmx.oecd.org', 1500 + intento * 4000); // buen ciudadano: evita auto-429
         try {
-          txt = await fetchText(url, { timeoutMs: 45_000, retries: 1 });
+          txt = await fetchText(url, { timeoutMs: 20_000, retries: 0 });
         } catch (e) {
-          if (intento === 2 || /^404 /.test((e as Error).message)) throw e;
+          if (intento === 1 || /^404 /.test((e as Error).message)) throw e;
         }
       }
       const [head, ...data] = parseCsv(txt);

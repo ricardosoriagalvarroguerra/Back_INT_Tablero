@@ -64,3 +64,9 @@ export async function tryJson<T>(url: string, opts: FetchOpts = {}): Promise<T |
     return null;
   }
 }
+
+/** Presupuesto de tiempo para conectores lentos: `vencido()` corta el bucle a tiempo. */
+export function plazo(ms: number) {
+  const fin = Date.now() + ms;
+  return { vencido: () => Date.now() > fin };
+}
