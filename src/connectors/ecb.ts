@@ -57,7 +57,7 @@ export async function ingestEcb(): Promise<number> {
     try {
       const j = await fetchJson<SdmxJson>(
         `https://data-api.ecb.europa.eu/service/data/IRS/M.${y.cc}.L.L40.CI.0000.EUR.N.Z?format=jsondata&lastNObservations=140`,
-        { retries: 2 },
+        { retries: 1, timeoutMs: 20_000 },
       );
       for (const o of parseObs(j))
         rows.push({ symbol: `${y.iso3}_GB10Y`, clase: 'yield', fecha: o.fecha, valor: o.valor, countryId: cid, sourceId: src });

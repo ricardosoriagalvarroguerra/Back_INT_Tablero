@@ -3,7 +3,7 @@
 // estricto de 1 req / 5 s; si la fuente está saturada (429), se marca caída y NO
 // se inventan datos.
 
-import { fetchJson, throttle } from '../lib/http.ts';
+import { fetchJson, throttle, plazo } from '../lib/http.ts';
 import { countryMaps, sourceId, upsertGeo, hoyISO, type GeoRow } from '../lib/ingest.ts';
 
 // iso3 → FIPS 10-4 (lo que GDELT espera en sourcecountry:). Sólo países con
@@ -27,7 +27,9 @@ export async function ingestGdelt(): Promise<number> {
   let ok = 0;
   let rateLimited = 0;
 
+  const t = plazo(180_000); // GDELT limita a 1 req/5 s: tope de 3 min por corrida
   for (const c of targets) {
+    if (t.vencido()) break;
     const q = encodeURIComponent(`(protest OR conflict OR crisis OR unrest) sourcecountry:${FIPS[c.iso3]}`);
     const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${q}&mode=tonechart&timespan=1w&format=json`;
     try {

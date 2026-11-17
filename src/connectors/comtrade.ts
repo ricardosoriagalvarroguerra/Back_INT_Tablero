@@ -2,7 +2,7 @@
 // importado (partner=mundo) + principales socios de exportación. Códigos M49;
 // campo de valor = primaryValue. Throttle suave para respetar el preview.
 
-import { fetchJson, throttle } from '../lib/http.ts';
+import { fetchJson, throttle, plazo } from '../lib/http.ts';
 import { countryMaps, sourceId, upsertTrade, type TradeRow } from '../lib/ingest.ts';
 
 // Último año con dato por reporter: se prueba del más reciente hacia atrás.
@@ -48,7 +48,9 @@ export async function ingestComtrade(): Promise<number> {
     return m;
   };
 
+  const t = plazo(180_000);
   for (const r of reporters) {
+    if (t.vencido()) break;
     try {
       // Exportaciones: todos los socios (incluye mundo=0), último año disponible.
       let xMap = new Map<number, number>();
