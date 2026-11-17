@@ -225,7 +225,7 @@ export async function runJob(
   const t0 = Date.now();
   const [{ id: runId }] = await query<{ id: number }>(
     'INSERT INTO etl_run_log (job, estado, disparador) VALUES ($1, $2, $3) RETURNING id',
-    [job, 'ok', disparador],
+    [job, 'parcial', disparador], // 'parcial' mientras corre; al cerrar pasa a ok/error
   );
   try {
     const filas = await fn();

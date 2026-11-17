@@ -10,7 +10,7 @@ import { env } from './env.ts';
 import { ping } from './db.ts';
 import { routes } from './routes.ts';
 import { ensureDatabase, estadoSeed } from './bootstrap.ts';
-import { runPipeline } from './pipeline.ts';
+import { runPipeline, ultimaOmitida } from './pipeline.ts';
 
 const app = Fastify({ logger: { level: 'info' } });
 
@@ -33,7 +33,13 @@ try {
 if (env.ingestOnStart) {
   const correr = (disparador: string, incluirLentos: boolean) =>
     runPipeline({ disparador, incluirLentos }).catch((e) => app.log.error(e, 'ingesta falló'));
-  setTimeout(() => void correr('arranque', true), 3_000);
+  // En un redespliegue la instancia vieja puede seguir viva unos minutos con el
+  // candado tomado: se reintenta la ingesta de arranque cada 2 min (hasta 5 veces).
+  const arranque = async (intento: number) => {
+    await correr(intento === 0 ? 'arranque' : 'arranque-reintento', true);
+    if (ultimaOmitida() && intento < 5) setTimeout(() => void arranque(intento + 1), 120_000);
+  };
+  setTimeout(() => void arranque(0), 3_000);
   if (env.ingestIntervalHours > 0) {
     let n = 0;
     setInterval(

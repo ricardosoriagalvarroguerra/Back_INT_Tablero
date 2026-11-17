@@ -45,6 +45,9 @@ export const JOBS: JobDef[] = [
 ];
 
 let enCurso: Promise<JobResult[]> | null = null;
+/** true si la última llamada no corrió porque otra instancia tenía el candado. */
+let omitidaPorCandado = false;
+export const ultimaOmitida = () => omitidaPorCandado;
 export const ingestaEnCurso = () => enCurso != null;
 
 export interface OpcionesIngesta {
@@ -60,7 +63,8 @@ export function runPipeline(op: OpcionesIngesta): Promise<JobResult[]> {
     const client = await pool.connect();
     try {
       const { rows } = await client.query<{ ok: boolean }>('SELECT pg_try_advisory_lock(hashtext($1)) AS ok', ['tablero-int-ingesta']);
-      if (!rows[0]?.ok) {
+      omitidaPorCandado = !rows[0]?.ok;
+      if (omitidaPorCandado) {
         console.log('  ⤳ ingesta omitida: otra instancia ya está ingiriendo');
         return [];
       }

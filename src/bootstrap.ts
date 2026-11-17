@@ -61,6 +61,11 @@ export async function ensureDatabase(): Promise<EstadoSeed> {
         throw e;
       }
     }
+    // Corridas que quedaron abiertas porque el proceso anterior se detuvo a mitad.
+    await client.query(
+      `UPDATE etl_run_log SET fin = now(), estado = 'error', error = 'interrumpida (reinicio del API)'
+       WHERE fin IS NULL AND inicio < now() - interval '1 minute'`,
+    );
     const r = await client.query<{ version: string; aplicado_en: Date }>('SELECT version, aplicado_en FROM seed_meta LIMIT 1');
     ultimo = { version: r.rows[0]?.version ?? null, aplicadoEn: r.rows[0]?.aplicado_en?.toISOString() ?? null, accion };
     return ultimo;
