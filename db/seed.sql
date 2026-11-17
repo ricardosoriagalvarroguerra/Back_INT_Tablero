@@ -63,7 +63,10 @@ INSERT INTO dim_indicator (codigo, nombre_es, nombre_en, unidad, frecuencia, fue
   ('fiscal_balance','Balance fiscal / PIB','Fiscal balance to GDP','% PIB','anual','IMF / World Bank','up','IMF GGXCNL_NGDP · WB GC.NLD.TOTL.GD.ZS'),
   ('current_account','Cuenta corriente / PIB','Current account to GDP','% PIB','anual','IMF / World Bank','up','IMF BCA_NGDPD · WB BN.CAB.XOKA.GD.ZS'),
   ('yield_10y','Rendimiento soberano 10A','10Y sovereign yield','%','diaria','FRED / ECB','down','FRED DGS10 · ECB'),
-  ('yield_2y','Rendimiento soberano 2A','2Y sovereign yield','%','diaria','FRED','none','FRED DGS2')
+  ('yield_2y','Rendimiento soberano 2A','2Y sovereign yield','%','diaria','FRED','none','FRED DGS2'),
+  ('cpi_eop','Inflación fin de período','Inflation, end of period','%','anual','IMF','down','IMF PCPIEPCH (dic/dic)'),
+  ('gdp_usd','PIB nominal','Nominal GDP','US$ miles de millones','anual','IMF','none','IMF NGDPD'),
+  ('gdp_ppp_share','Peso en el PIB mundial (PPA)','Share of world GDP (PPP)','% mundo','anual','IMF','none','IMF PPPSH · ponderador de agregados propios')
 ON CONFLICT (codigo) DO UPDATE SET
   nombre_es = EXCLUDED.nombre_es, nombre_en = EXCLUDED.nombre_en, unidad = EXCLUDED.unidad,
   frecuencia = EXCLUDED.frecuencia, fuente = EXCLUDED.fuente, polaridad = EXCLUDED.polaridad,
@@ -80,9 +83,25 @@ INSERT INTO dim_source (codigo, proveedor, url, licencia, auth, rate_limit, esta
   ('frankfurter','Frankfurter (ECB)','https://api.frankfurter.dev/v1/','Dominio público','none','laxo','cold','2026-06-20'),
   ('comtrade','UN Comtrade','https://comtradeapi.un.org/public/v1/preview/','UN terms','none','filas limitadas','cold','2026-06-20'),
   ('gdelt','GDELT 2.0','https://api.gdeltproject.org/api/v2/doc/doc','GDELT terms','none','1 req / 5 s','cold','2026-06-20'),
-  ('fred','FRED (St. Louis Fed)','https://api.stlouisfed.org/fred/','Fed terms','api_key','120/min','cold','2026-06-20'),
+  ('fred','FRED (St. Louis Fed)','https://fred.stlouisfed.org/graph/fredgraph.csv','Fed terms','none','laxo','cold','2026-11-17'),
   ('acled','ACLED','https://api.acleddata.com/','ACLED terms','registration','n/d','cold',NULL),
+  ('bis','BIS (Bank for International Settlements)','https://stats.bis.org/api/v2/','BIS terms','none','laxo','cold','2026-11-17'),
   ('youtube','YouTube','https://www.youtube.com/','YouTube ToS','none','n/d','cold','2026-06-20')
 ON CONFLICT (codigo) DO UPDATE SET
   proveedor = EXCLUDED.proveedor, url = EXCLUDED.url, licencia = EXCLUDED.licencia,
   auth = EXCLUDED.auth, rate_limit = EXCLUDED.rate_limit;
+
+-- ── dim_aggregate · agregados WEO del FMI (ponderados oficialmente por el FMI) ──
+INSERT INTO dim_aggregate (codigo, nombre_es, orden) VALUES
+  ('WEOWORLD','Mundo',1),
+  ('ADVEC','Economías avanzadas',2),
+  ('OEMDC','Emergentes y en desarrollo',3),
+  ('MAE','G7',4),
+  ('EURO','Zona euro',5),
+  ('DA','Asia emergente',6),
+  ('WE','América Latina y el Caribe',7),
+  ('SMQ','América del Sur',8),
+  ('MECA','Medio Oriente y Asia Central',9),
+  ('SSA','África subsahariana',10),
+  ('EDE','Europa emergente',11)
+ON CONFLICT (codigo) DO UPDATE SET nombre_es = EXCLUDED.nombre_es, orden = EXCLUDED.orden;

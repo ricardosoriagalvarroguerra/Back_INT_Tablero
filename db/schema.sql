@@ -153,6 +153,25 @@ CREATE TABLE fact_geo_events (
 );
 CREATE INDEX ix_geo_fecha ON fact_geo_events (fecha DESC);
 
+-- Agregados regionales del FMI (WEO): mundo, avanzadas, emergentes, LatAm…
+-- Son los agregados oficiales ponderados del FMI (no recalculados aquí).
+CREATE TABLE dim_aggregate (
+  codigo      text PRIMARY KEY,                   -- 'WEOWORLD','ADVEC','OEMDC','WE'…
+  nombre_es   text NOT NULL,
+  orden       integer NOT NULL DEFAULT 0
+);
+
+CREATE TABLE fact_aggregate (
+  agregado     text    NOT NULL REFERENCES dim_aggregate (codigo),
+  indicator_id integer NOT NULL REFERENCES dim_indicator (id),
+  anio         integer NOT NULL,
+  valor        numeric(20,6),
+  source_id    integer NOT NULL REFERENCES dim_source (id),
+  ingested_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (agregado, indicator_id, anio)
+);
+CREATE INDEX ix_agg_indicator ON fact_aggregate (indicator_id);
+
 -- Calendario de releases / bancos centrales.
 CREATE TABLE calendar_event (
   id          serial PRIMARY KEY,
@@ -176,7 +195,15 @@ CREATE TABLE etl_run_log (
   fin         timestamptz,
   filas       integer NOT NULL DEFAULT 0,
   estado      estado_etl NOT NULL DEFAULT 'ok',
-  error       text
+  error       text,
+  disparador  text NOT NULL DEFAULT 'manual'    -- 'arranque','programada','manual','api'
+);
+
+-- Versión del esquema+seed aplicados (auto-aprovisionamiento al arrancar el API).
+CREATE TABLE seed_meta (
+  id          boolean PRIMARY KEY DEFAULT true CHECK (id),
+  version     text NOT NULL,
+  aplicado_en timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX ix_etl_job ON etl_run_log (job, inicio DESC);
 
@@ -194,6 +221,9 @@ JOIN dim_country c   ON c.id = t.country_id
 JOIN dim_indicator i ON i.id = t.indicator_id
 JOIN dim_source s    ON s.id = t.source_id
 WHERE t.valor IS NOT NULL
+  -- el FMI publica proyecciones hasta +5 años: el "último dato" es como máximo
+  -- el año en curso (estimación WEO), nunca una proyección de años futuros.
+  AND t.fecha <= make_date(extract(year FROM current_date)::int, 12, 31)
 ORDER BY t.country_id, t.indicator_id, t.fecha DESC;
 
 -- Heatmap macro: último valor + z-score por indicador (cross-sección de países).

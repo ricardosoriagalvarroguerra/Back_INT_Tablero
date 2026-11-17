@@ -90,3 +90,18 @@ Leyenda: ✅ verificado con datos · ⚠️ alcanzable, throttling estricto · �
 - `FRED_API_KEY` — gratuita en https://fred.stlouisfed.org/docs/api/api_key.html → yields/tasas/VIX/DXY oficiales.
 - `YOUTUBE_API_KEY` — robustez extra del live (degradado keyless si falta).
 - `ACLED_API_KEY` + `ACLED_EMAIL` — eventos de conflicto con fatalities.
+
+## Actualización v0.9 (verificado en vivo 2026-11-17)
+
+| Fuente | Endpoint | Auth | Uso en el tablero |
+|---|---|---|---|
+| **BIS · Central bank policy rates** | `https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/M.?startPeriod=2015-01&format=csv` | — | `policy_rate` mensual (fin de período) de ~40 áreas; reemplaza a OCDE IRSTCI (tasa interbancaria) |
+| **FRED keyless** | `https://fred.stlouisfed.org/graph/fredgraph.csv?id={SERIE}&cosd=2015-01-01` | — | DGS10/2/3MO, DFII10, T10YIE, BAMLH0A0HYM2, BAMLC0A0CM, BAMLEMCBPIOAS, NFCI, DTWEXBGS, VIXCLS, DCOILWTICO, DCOILBRENTEU, SP500, DEX* (8 monedas). Una serie por pedido (varias ids devuelven un zip) |
+| **FMI DataMapper · agregados** | `…/api/v1/{IND}` (mismo endpoint) | — | Los códigos `WEOWORLD`, `ADVEC`, `OEMDC`, `WE`, `EURO`, `DA`, `MECA`, `SSA`, `MAE`, `SMQ`, `EDE` vienen junto a los países; nuevos indicadores `NGDPD`, `PPPSH`, `PCPIEPCH`. Horizonte WEO hasta 2031 |
+| **OCDE (CSV)** | `…/OECD.SDD.STES,DSD_KEI@DF_KEI,4.0/{ISO3}.M.IRLT......?startPeriod=2015-01&format=csvfile` | — | 10A por país. Un país por consulta: un lote con un país sin datos (TUR → 404) responde 500 entero |
+| **Yahoo (chart)** | `https://query2.finance.yahoo.com/v8/finance/chart/{SIM}?interval=1d&range=2y` | — | Alterna `query2`/`query1` ante 429 |
+| **Comtrade (preview)** | `…?reporterCode={M49}&period={AÑO}&flowCode=X&cmdCode=TOTAL` | — | Se prueba el año −2, −3, −4 y se toma el primero con datos |
+
+Notas:
+- En local detrás de un proxy HTTP, Node necesita `NODE_USE_ENV_PROXY=1` para que `fetch` use `HTTPS_PROXY`.
+- `FRED_API_KEY` sólo es necesaria ahora para el calendario de releases.

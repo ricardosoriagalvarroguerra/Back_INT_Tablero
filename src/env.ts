@@ -17,6 +17,11 @@ export const env = {
   youtubeApiKey: process.env.YOUTUBE_API_KEY || '',
   acledApiKey: process.env.ACLED_API_KEY || '',
   acledEmail: process.env.ACLED_EMAIL || '',
+  // ingesta automática dentro del API
+  ingestOnStart: process.env.INGEST_ON_START !== 'false',
+  ingestIntervalHours: Number(process.env.INGEST_INTERVAL_HOURS || '6'),
+  // token para POST /api/ingesta (vacío = endpoint deshabilitado)
+  ingestToken: process.env.INGEST_TOKEN || '',
 } as const;
 
 export const has = {

@@ -3,7 +3,9 @@
 API **Fastify 5 + `pg`** (Node/TS) que sirve el [Tablero Inteligente INT](https://github.com/ricardosoriagalvarroguerra/Front_INT_Tablero)
 desde la BDR **PostgreSQL `internacional`**, más los **jobs de ingesta idempotentes**
 que cargan los hechos desde fuentes abiertas (World Bank, IMF, OECD, ECB, Yahoo
-Finance, UN Comtrade, GDELT, FRED).
+Finance, UN Comtrade, GDELT, FRED, BIS) y la **capa analítica** (`/api/analisis`):
+tesis, semáforo de 9 dimensiones, alertas por reglas, ciclo global y monetario,
+condiciones financieras, dinámica de deuda, FX emergente y ranking de vulnerabilidad.
 
 > **Regla de oro: cero datos inventados.** Cada cifra es trazable a su fuente y
 > fecha de corte; si una fuente falla, la API degrada a `s/d`, nunca rellena.
@@ -14,10 +16,13 @@ Finance, UN Comtrade, GDELT, FRED).
 ```
 .
 ├── src/             · API Fastify + conectores de ingesta (TypeScript, se ejecuta con el strip-types nativo de Node ≥22.18)
-│   ├── index.ts     · bootstrap del API (escucha en 0.0.0.0:$PORT)
+│   ├── index.ts     · arranque: aprovisiona la BDR, escucha en 0.0.0.0:$PORT, programa la ingesta
+│   ├── bootstrap.ts · auto-aprovisionamiento (hash de schema/seed → seed_meta)
+│   ├── pipeline.ts  · ingesta (al arrancar, cada INGEST_INTERVAL_HOURS y POST /api/ingesta)
+│   ├── analisis.ts  · capa analítica (reglas explícitas, ver docs/ANALISIS.md)
 │   ├── routes.ts    · rutas por vista · repo.ts (SQL→payload)
-│   ├── ingest.ts    · runner de ingesta (orquesta connectors/)
-│   └── connectors/  · WB · IMF · Yahoo · ECB · OECD · Comtrade · GDELT · FRED
+│   ├── ingest.ts    · CLI de ingesta (npm run ingest [-- fuentes…])
+│   └── connectors/  · WB · IMF · BIS · FRED · Yahoo · ECB · OECD · Comtrade · GDELT
 ├── db/              · schema.sql (dimensional) + seed.sql (dim_country/indicator/source)
 └── docs/            · SOURCES.md (fuentes) · ANALISIS.md (guardrails y estado de datos)
 ```
@@ -27,23 +32,24 @@ Finance, UN Comtrade, GDELT, FRED).
 Requiere **PostgreSQL local** (p. ej. Postgres.app en `:5432`) y **Node ≥ 22.18**.
 
 ```bash
-# 1) Base de datos
+# 1) Base de datos (el esquema y el seed se aplican solos al arrancar)
 createdb internacional
-psql -d internacional -f db/schema.sql
-psql -d internacional -f db/seed.sql
 
 # 2) Variables (opcionales) — copiar y editar
 cp .env.example .env            # DATABASE_URL, API_PORT, FRED_API_KEY…
 
 # 3) Dependencias + ingesta (idempotente; registra en etl_run_log)
 npm install
-npm run ingest
+npm run ingest                  # o sólo algunas: npm run ingest -- bis fred
 
 # 4) API
 npm start                       # Fastify en :5176 (o $API_PORT)
 ```
 
-Healthcheck: `GET /api/healthz` → `{ ok: <conexión a BDR>, ts }`.
+Healthcheck: `GET /api/healthz` → `{ ok: <conexión a BDR>, ts, seed: {version, accion} }`.
+
+Detrás de un proxy HTTP (p.ej. entornos corporativos o sandboxes) Node necesita
+`NODE_USE_ENV_PROXY=1` para que la ingesta use `HTTPS_PROXY`.
 
 ## Despliegue en Railway
 
@@ -56,16 +62,15 @@ Railway inyecta vía **`PORT`** (ver `src/env.ts`).
    ${{Postgres.DATABASE_URL}}`).
 2. **Variables** — define `FRED_API_KEY` (y opcionales `YOUTUBE_API_KEY`,
    `ACLED_API_KEY`/`ACLED_EMAIL`). `PORT` lo provee Railway; no lo fijes a mano.
-3. **Esquema + datos** — una sola vez, contra la BDR de Railway (añade
-   `?sslmode=require` si conectas desde fuera de la red privada):
+3. **Esquema + datos** — automático: al arrancar, el API aplica `db/schema.sql` + `db/seed.sql`
+   si la base está vacía o cambiaron (ver `seed_meta`) y lanza la ingesta completa (~5–8 min la
+   primera vez). Después refresca cada `INGEST_INTERVAL_HOURS` (6). No hace falta cron externo.
+4. **Disparo manual** (opcional) — define `INGEST_TOKEN` (valor aleatorio largo) y:
    ```bash
-   psql "$DATABASE_URL" -f db/schema.sql
-   psql "$DATABASE_URL" -f db/seed.sql
-   npm run ingest          # poblar fact_* (idempotente, re-ejecutable)
+   curl -X POST "$API/api/ingesta" -H "Authorization: Bearer $INGEST_TOKEN"
    ```
-   La ingesta puede programarse como **cron job** de Railway para refrescar a diario.
 
-> Sin BDR poblada el API arranca igual: las rutas responden `s/d` hasta que corre la ingesta.
+> Mientras la primera ingesta corre, las rutas responden con lo que haya (o `s/d`).
 
 ## Variables de entorno
 
@@ -74,7 +79,11 @@ Railway inyecta vía **`PORT`** (ver `src/env.ts`).
 | `DATABASE_URL` | sí (prod) | `postgres://localhost:5432/internacional` | Conexión PostgreSQL |
 | `PORT` | — | — | Puerto inyectado por la plataforma (tiene prioridad) |
 | `API_PORT` | — | `5176` | Puerto en local si no hay `PORT` |
-| `FRED_API_KEY` | — | — | Yields UST + calendario (gratuita en FRED) |
+| `INGEST_TOKEN` | — | — | Habilita `POST /api/ingesta` (Bearer) |
+| `INGEST_INTERVAL_HOURS` | — | `6` | Frecuencia de la ingesta programada (0 = sólo al arrancar) |
+| `INGEST_ON_START` | — | `true` | `false` desactiva la ingesta automática |
+| `DB_AUTO_SEED` | — | `true` | `false` desactiva el auto-aprovisionamiento de la BDR |
+| `FRED_API_KEY` | — | — | Sólo para el calendario de releases (los datos FRED se leen sin clave) |
 | `YOUTUBE_API_KEY`, `ACLED_API_KEY`, `ACLED_EMAIL` | — | — | Opcionales; degradan a `s/d` si faltan |
 
 Guardrails y estado de datos por vista: [`docs/ANALISIS.md`](docs/ANALISIS.md).
