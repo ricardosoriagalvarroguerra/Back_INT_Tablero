@@ -5,10 +5,11 @@
 import { fetchJson, throttle } from '../lib/http.ts';
 import { countryMaps, sourceId, upsertTrade, type TradeRow } from '../lib/ingest.ts';
 
-const PERIODO = '2022'; // último año verificado con buena cobertura en preview
+// Último año con dato por reporter: se prueba del más reciente hacia atrás.
+const PERIODOS = [String(new Date().getUTCFullYear() - 2), String(new Date().getUTCFullYear() - 3), String(new Date().getUTCFullYear() - 4)];
 const FOCUS = new Set([
   'USA','CHN','DEU','JPN','GBR','FRA','ITA','CAN','ESP','KOR','IND','AUS',
-  'BRA','MEX','ARG','CHL','COL','PER','ZAF','TUR',
+  'BRA','MEX','ARG','CHL','COL','PER','URY','PRY','BOL','ECU','ZAF','TUR',
 ]);
 const TOP_SOCIOS = 8;
 
@@ -20,10 +21,10 @@ interface CtResp {
   data?: CtRow[];
 }
 
-async function fetchFlow(m49: number, flujo: 'X' | 'M', partnerCode?: number): Promise<CtRow[]> {
-  await throttle('comtradeapi.un.org', 400);
+async function fetchFlow(m49: number, periodo: string, flujo: 'X' | 'M', partnerCode?: number): Promise<CtRow[]> {
+  await throttle('comtradeapi.un.org', 1100);
   const pc = partnerCode == null ? '' : `&partnerCode=${partnerCode}`;
-  const url = `https://comtradeapi.un.org/public/v1/preview/C/A/HS?reporterCode=${m49}&period=${PERIODO}&flowCode=${flujo}&cmdCode=TOTAL${pc}`;
+  const url = `https://comtradeapi.un.org/public/v1/preview/C/A/HS?reporterCode=${m49}&period=${periodo}&flowCode=${flujo}&cmdCode=TOTAL${pc}`;
   const json = await fetchJson<CtResp>(url, { retries: 1 });
   return json.data ?? [];
 }
@@ -49,8 +50,13 @@ export async function ingestComtrade(): Promise<number> {
 
   for (const r of reporters) {
     try {
-      // Exportaciones: todos los socios (incluye mundo=0).
-      const xMap = colapsar(await fetchFlow(r.m49!, 'X'));
+      // Exportaciones: todos los socios (incluye mundo=0), último año disponible.
+      let xMap = new Map<number, number>();
+      let PERIODO = '';
+      for (const p of PERIODOS) {
+        xMap = colapsar(await fetchFlow(r.m49!, p, 'X'));
+        if (xMap.size) { PERIODO = p; break; }
+      }
       if (xMap.size === 0) continue;
       cubiertos++;
       const mundoX = xMap.get(0);
@@ -65,7 +71,7 @@ export async function ingestComtrade(): Promise<number> {
         rows.push({ reporterId: r.id, partnerM49: pc, partnerNombre: null, periodo: PERIODO, flujo: 'X', valorUsd: val, sourceId: src });
       }
       // Importaciones: total mundo.
-      const mMap = colapsar(await fetchFlow(r.m49!, 'M', 0));
+      const mMap = colapsar(await fetchFlow(r.m49!, PERIODO, 'M', 0));
       const mundoM = mMap.get(0) ?? [...mMap.values()][0];
       if (mundoM != null) {
         rows.push({ reporterId: r.id, partnerM49: 0, partnerNombre: null, periodo: PERIODO, flujo: 'M', valorUsd: mundoM, sourceId: src });
@@ -74,7 +80,7 @@ export async function ingestComtrade(): Promise<number> {
       // reporter individual falla → se omite; el resto continúa.
     }
   }
-  console.log(`    comtrade: ${cubiertos}/${reporters.length} reporters cubiertos (periodo ${PERIODO})`);
+  console.log(`    comtrade: ${cubiertos}/${reporters.length} reporters cubiertos`);
   if (cubiertos === 0) throw new Error('UN Comtrade sin datos para ningún reporter');
   return upsertTrade(rows);
 }

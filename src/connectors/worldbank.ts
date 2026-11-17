@@ -1,5 +1,7 @@
-// World Bank Open Data → fact_timeseries (macro anual). Multi-país via
-// country/all; se filtra a nuestro catálogo. Clave natural (país, indicador, año).
+// World Bank Open Data → fact_timeseries (macro anual, 2015→último dato).
+// Complementa al FMI donde el WEO no cubre (p.ej. desempleo de algunos EM).
+// Corre ANTES del FMI: en celdas solapadas prevalece el WEO (fuente curada
+// cross-country); el source_id por fila mantiene la trazabilidad.
 
 import { fetchJson } from '../lib/http.ts';
 import {
@@ -30,23 +32,23 @@ export async function ingestWorldBank(): Promise<number> {
   const { byIso3 } = await countryMaps();
   const src = await sourceId('worldbank');
   const rows: TsRow[] = [];
+  let fallidos = 0;
 
   for (const m of MAP) {
     const indId = await indicatorId(m.codigo);
-    const url = `https://api.worldbank.org/v2/country/all/indicator/${m.wb}?format=json&mrv=6&per_page=20000`;
-    const json = await fetchJson<[unknown, WbRow[] | null]>(url);
-    const data = json[1] ?? [];
-    for (const r of data) {
-      const cid = byIso3.get(r.countryiso3code);
-      if (cid == null || r.value == null) continue;
-      rows.push({
-        countryId: cid,
-        indicatorId: indId,
-        fecha: anioAFecha(r.date),
-        valor: r.value,
-        sourceId: src,
-      });
+    const url = `https://api.worldbank.org/v2/country/all/indicator/${m.wb}?format=json&date=2015:${new Date().getUTCFullYear()}&per_page=20000`;
+    try {
+      const json = await fetchJson<[unknown, WbRow[] | null]>(url, { timeoutMs: 45_000, retries: 3 });
+      for (const r of json[1] ?? []) {
+        const cid = byIso3.get(r.countryiso3code);
+        if (cid == null || r.value == null) continue;
+        rows.push({ countryId: cid, indicatorId: indId, fecha: anioAFecha(r.date), valor: r.value, sourceId: src });
+      }
+    } catch (e) {
+      fallidos++; // un indicador caído no tumba al resto (502 esporádicos del WB)
+      console.error(`    worldbank ${m.wb}: ${(e as Error).message}`);
     }
   }
+  if (fallidos === MAP.length) throw new Error('World Bank sin respuesta');
   return upsertTimeseries(rows);
 }

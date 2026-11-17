@@ -172,17 +172,60 @@ export async function upsertGeo(rows: GeoRow[]): Promise<number> {
   return rows.length;
 }
 
+export interface AggRow {
+  agregado: string;
+  indicatorId: number;
+  anio: number;
+  valor: number | null;
+  sourceId: number;
+}
+
+export async function upsertAggregate(rows: AggRow[]): Promise<number> {
+  if (!rows.length) return 0;
+  await query(
+    `INSERT INTO fact_aggregate (agregado, indicator_id, anio, valor, source_id)
+     SELECT * FROM unnest($1::text[], $2::int[], $3::int[], $4::numeric[], $5::int[])
+     ON CONFLICT (agregado, indicator_id, anio)
+     DO UPDATE SET valor = EXCLUDED.valor, source_id = EXCLUDED.source_id, ingested_at = now()`,
+    [
+      rows.map((r) => r.agregado),
+      rows.map((r) => r.indicatorId),
+      rows.map((r) => r.anio),
+      rows.map((r) => r.valor),
+      rows.map((r) => r.sourceId),
+    ],
+  );
+  return rows.length;
+}
+
+/** Limpia los cachés de catálogos (tras re-aprovisionar la BDR los ids cambian). */
+export function resetCaches(): void {
+  _countries = null;
+  _indicatorIds.clear();
+  _sourceIds.clear();
+}
+
 // ── Orquestación con observabilidad ─────────────────────────────────────
+export interface JobResult {
+  job: string;
+  fuente: string;
+  estado: 'ok' | 'error';
+  filas: number;
+  ms: number;
+  error: string | null;
+}
+
 /** Envuelve un job: registra en etl_run_log y actualiza dim_source. */
 export async function runJob(
   sourceCodigo: string,
   job: string,
   fn: () => Promise<number>,
-): Promise<void> {
+  disparador = 'manual',
+): Promise<JobResult> {
   const t0 = Date.now();
   const [{ id: runId }] = await query<{ id: number }>(
-    'INSERT INTO etl_run_log (job, estado) VALUES ($1, $2) RETURNING id',
-    [job, 'ok'],
+    'INSERT INTO etl_run_log (job, estado, disparador) VALUES ($1, $2, $3) RETURNING id',
+    [job, 'ok', disparador],
   );
   try {
     const filas = await fn();
@@ -197,6 +240,7 @@ export async function runJob(
       [ms, sourceCodigo],
     );
     console.log(`  ✓ ${job}: ${filas} filas · ${ms} ms`);
+    return { job, fuente: sourceCodigo, estado: 'ok', filas, ms, error: null };
   } catch (err) {
     const msg = (err as Error).message;
     await query('UPDATE etl_run_log SET fin = now(), estado = $1, error = $2 WHERE id = $3', [
@@ -206,6 +250,7 @@ export async function runJob(
     ]);
     await query(`UPDATE dim_source SET estado = 'down' WHERE codigo = $1`, [sourceCodigo]);
     console.error(`  ✗ ${job}: ${msg}`);
+    return { job, fuente: sourceCodigo, estado: 'error', filas: 0, ms: Date.now() - t0, error: msg };
   }
 }
 

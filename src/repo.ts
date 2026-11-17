@@ -23,17 +23,114 @@ export async function paises() {
   }));
 }
 
+// Periodicidad esperada de cada fuente (para el semáforo de frescura en el front).
+const PERIODICIDAD: Record<string, 'diaria' | 'semanal' | 'mensual' | 'anual'> = {
+  yahoo: 'diaria', fred: 'diaria', ecb: 'diaria', gdelt: 'diaria', bis: 'mensual', oecd: 'mensual',
+  imf: 'anual', worldbank: 'anual', comtrade: 'anual',
+};
+
 export async function fuentes() {
   const rows = await query(`SELECT * FROM v_source_health`);
+  // Último dato (fecha del hecho más reciente) por fuente — no sólo la última verificación.
+  const ult = await query(
+    `SELECT s.codigo, max(f)::date AS f FROM (
+       SELECT source_id, max(fecha) f FROM fact_market GROUP BY 1
+       UNION ALL SELECT source_id, max(fecha) FROM fact_timeseries
+         WHERE fecha <= make_date(extract(year FROM current_date)::int, 12, 31) GROUP BY 1
+       UNION ALL SELECT source_id, max(fecha) FROM fact_geo_events GROUP BY 1
+       UNION ALL SELECT source_id, make_date(max(periodo)::int, 12, 31) FROM fact_trade GROUP BY 1
+     ) x JOIN dim_source s ON s.id = x.source_id GROUP BY s.codigo`,
+  );
+  const ultByCod = new Map(ult.map((r) => [r.codigo, r.f ? new Date(r.f).toISOString().slice(0, 10) : null]));
+  return rows
+    .filter((r) => r.estado !== 'cold' || ultByCod.has(r.codigo))
+    .map((r) => ({
+      id: r.codigo,
+      nombre: r.proveedor,
+      url: r.url,
+      estado: r.estado,
+      latenciaMs: n(r.latencia_ms),
+      ultimaVerificacion: r.ultima_verificacion ? new Date(r.ultima_verificacion).toISOString() : null,
+      ultimoDato: ultByCod.get(r.codigo) ?? null,
+      periodicidad: PERIODICIDAD[r.codigo] ?? null,
+      licencia: r.licencia ?? '',
+    }));
+}
+
+// ── Bitácora de ingesta: última corrida por job ───────────────────────────
+export async function ingestaEstado() {
+  const rows = await query(
+    `SELECT DISTINCT ON (job) job, inicio, fin, filas, estado, error, disparador
+     FROM etl_run_log ORDER BY job, inicio DESC`,
+  );
   return rows.map((r) => ({
-    id: r.codigo,
-    nombre: r.proveedor,
-    url: r.url,
+    job: r.job,
+    inicio: new Date(r.inicio).toISOString(),
+    fin: r.fin ? new Date(r.fin).toISOString() : null,
+    filas: Number(r.filas),
     estado: r.estado,
-    latenciaMs: n(r.latencia_ms),
-    ultimaVerificacion: r.ultima_verificacion ? new Date(r.ultima_verificacion).toISOString() : null,
-    licencia: r.licencia ?? '',
+    error: r.error,
+    disparador: r.disparador,
   }));
+}
+
+// ── Histórico por país: anual 2015→horizonte WEO + mensual (tasa, 10A) ─────
+export async function historico(iso3: string) {
+  const pais = await one<{ nombre_es: string; region: string }>(`SELECT nombre_es, region FROM dim_country WHERE iso3 = $1`, [iso3]);
+  if (!pais) return null;
+  const Y = new Date().getUTCFullYear();
+  const an = await query(
+    `SELECT i.codigo, i.nombre_es, i.unidad, i.polaridad, extract(year FROM t.fecha)::int anio, t.valor::float8 v, s.proveedor
+     FROM fact_timeseries t JOIN dim_country c ON c.id = t.country_id JOIN dim_indicator i ON i.id = t.indicator_id
+     JOIN dim_source s ON s.id = t.source_id
+     WHERE c.iso3 = $1 AND i.frecuencia = 'anual' AND t.valor IS NOT NULL ORDER BY i.id, t.fecha`,
+    [iso3],
+  );
+  const ind = new Map<string, { codigo: string; nombre: string; unidad: string; polaridad: string; fuentes: Set<string>; serie: { anio: number; valor: number; tipo: string }[] }>();
+  for (const r of an) {
+    if (!ind.has(r.codigo)) ind.set(r.codigo, { codigo: r.codigo, nombre: r.nombre_es, unidad: r.unidad, polaridad: r.polaridad, fuentes: new Set(), serie: [] });
+    const x = ind.get(r.codigo)!;
+    x.fuentes.add(r.proveedor);
+    x.serie.push({ anio: Number(r.anio), valor: Number(r.v), tipo: r.anio < Y ? 'obs' : r.anio === Y ? 'est' : 'proy' });
+  }
+  const mensual = async (sql: string, params: unknown[]) =>
+    (await query(sql, params)).map((r) => ({ fecha: r.f as string, valor: Number(r.v) }));
+  const tasa = await mensual(
+    `SELECT to_char(t.fecha,'YYYY-MM') f, t.valor::float8 v FROM fact_timeseries t
+     JOIN dim_country c ON c.id = t.country_id JOIN dim_indicator i ON i.id = t.indicator_id
+     WHERE c.iso3 = $1 AND i.codigo = 'policy_rate' ORDER BY t.fecha`,
+    [iso3],
+  );
+  const y10 = await mensual(
+    `SELECT to_char(date_trunc('month', fecha),'YYYY-MM') f, avg(valor)::float8 v FROM fact_market
+     WHERE symbol = $1 GROUP BY 1 ORDER BY 1`,
+    [iso3 === 'USA' ? 'UST10Y' : `${iso3}_GB10Y`],
+  );
+  return {
+    iso3,
+    pais: pais.nombre_es,
+    region: pais.region,
+    anioBase: Y,
+    indicadores: [...ind.values()].map((x) => ({ ...x, fuentes: [...x.fuentes] })),
+    tasaPolitica: tasa,
+    yield10: y10,
+  };
+}
+
+// ── Agregados WEO (para comparar un país con su región / el mundo) ─────────
+export async function agregados() {
+  const rows = await query(
+    `SELECT a.agregado, d.nombre_es, i.codigo, a.anio, a.valor::float8 v FROM fact_aggregate a
+     JOIN dim_aggregate d ON d.codigo = a.agregado JOIN dim_indicator i ON i.id = a.indicator_id
+     ORDER BY d.orden, i.codigo, a.anio`,
+  );
+  const out = new Map<string, { codigo: string; nombre: string; indicadores: Record<string, { anio: number; valor: number }[]> }>();
+  for (const r of rows) {
+    if (!out.has(r.agregado)) out.set(r.agregado, { codigo: r.agregado, nombre: r.nombre_es, indicadores: {} });
+    const a = out.get(r.agregado)!;
+    (a.indicadores[r.codigo] ??= []).push({ anio: Number(r.anio), valor: Number(r.v) });
+  }
+  return [...out.values()];
 }
 
 // ── Heatmap macro (países × indicadores, z-score) ─────────────────────────
@@ -100,7 +197,8 @@ interface MktPunto { fecha: string; valor: number }
 async function marketSeries(): Promise<Map<string, { clase: string; pts: MktPunto[] }>> {
   const rows = await query(
     `SELECT symbol, clase, fecha, valor::float8 AS valor FROM fact_market
-     WHERE clase IN ('fx','commodity','indice','volatilidad') ORDER BY symbol, fecha`,
+     WHERE clase IN ('fx','commodity','indice','volatilidad') AND symbol <> 'NFCI'
+       AND fecha >= current_date - 400 ORDER BY symbol, fecha`,
   );
   const map = new Map<string, { clase: string; pts: MktPunto[] }>();
   for (const r of rows) {
@@ -115,6 +213,11 @@ const NOMBRES: Record<string, string> = {
   VIX: 'VIX (volatilidad)', SP500: 'S&P 500', DXY: 'Índice dólar (DXY)', EURUSD: 'EUR/USD',
   USDBRL: 'USD/BRL', USDMXN: 'USD/MXN', USDARS: 'USD/ARS', USDCLP: 'USD/CLP',
   USDCOP: 'USD/COP', USDTRY: 'USD/TRY', USDZAR: 'USD/ZAR', USDCNY: 'USD/CNY',
+  USDJPY: 'USD/JPY', USDINR: 'USD/INR', USDKRW: 'USD/KRW', USDPEN: 'USD/PEN', USDIDR: 'USD/IDR',
+  USDPLN: 'USD/PLN', NATGAS: 'Gas natural (Henry Hub)', SOY: 'Soja', WHEAT: 'Trigo', EM_EQ: 'Acciones emergentes (EEM)',
+  USD_BROAD: 'Dólar amplio (Fed)', UST10Y: 'Tesoro EE.UU. 10A', UST2Y: 'Tesoro EE.UU. 2A', UST3M: 'Tesoro EE.UU. 3M',
+  UST10Y_REAL: 'Tasa real 10A (TIPS)', BE10Y: 'Inflación implícita 10A', HY_OAS: 'Spread high yield EE.UU.',
+  IG_OAS: 'Spread grado de inversión EE.UU.', EM_OAS: 'Spread corporativo emergente', NFCI: 'Condiciones financieras (NFCI)',
 };
 
 function pearson(a: number[], b: number[]): number | null {
@@ -128,11 +231,19 @@ function pearson(a: number[], b: number[]): number | null {
   return den === 0 ? null : sxy / den;
 }
 
-const retornos = (pts: MktPunto[]): number[] => {
-  const out: number[] = [];
-  for (let i = 1; i < pts.length; i++) out.push(pts[i].valor / pts[i - 1].valor - 1);
-  return out;
-};
+/** Retornos diarios de a y b alineados por fecha (sólo días con ambos datos), últimos ~12 meses. */
+function retornosAlineados(a: MktPunto[], b: MktPunto[]): [number[], number[]] {
+  const desde = new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
+  const mb = new Map(b.map((p) => [p.fecha, p.valor]));
+  const comunes = a.filter((p) => p.fecha >= desde && mb.has(p.fecha));
+  const ra: number[] = [], rb: number[] = [];
+  for (let i = 1; i < comunes.length; i++) {
+    const pa = comunes[i - 1], ca = comunes[i];
+    ra.push(ca.valor / pa.valor - 1);
+    rb.push(mb.get(ca.fecha)! / mb.get(pa.fecha)! - 1);
+  }
+  return [ra, rb];
+}
 
 export async function fxCommodities() {
   const map = await marketSeries();
@@ -146,18 +257,20 @@ export async function fxCommodities() {
       valor: last,
       varDiaria: last != null && prev != null && prev !== 0 ? (last / prev - 1) * 100 : null,
       spark: pts.slice(-30).map((p) => p.valor),
-      prov: { fuente: symbol === 'EURUSD' ? 'ECB' : 'Yahoo Finance', asof: pts[pts.length - 1]?.fecha ?? null, estado: 'ok' as const },
+      prov: { fuente: symbol === 'EURUSD' ? 'ECB' : 'Yahoo Finance / FRED', asof: pts[pts.length - 1]?.fecha ?? null, estado: 'ok' as const },
     };
   });
 
-  // Correlaciones sobre retornos diarios del set principal.
-  const CORR = ['WTI', 'BRENT', 'GOLD', 'COPPER', 'VIX', 'DXY', 'SP500', 'USDBRL'];
-  const rets = new Map(CORR.filter((s) => map.has(s)).map((s) => [s, retornos(map.get(s)!.pts)]));
+  // Correlaciones de retornos diarios (12 meses, alineados por fecha).
+  const CORR = ['WTI', 'BRENT', 'GOLD', 'COPPER', 'VIX', 'DXY', 'USD_BROAD', 'SP500', 'USDBRL', 'USDMXN'];
+  const keys = CORR.filter((s) => map.has(s));
   const correlaciones: { a: string; b: string; rho: number | null }[] = [];
-  const keys = [...rets.keys()];
   for (let i = 0; i < keys.length; i++)
-    for (let j = i; j < keys.length; j++)
-      correlaciones.push({ a: keys[i], b: keys[j], rho: i === j ? 1 : pearson(rets.get(keys[i])!, rets.get(keys[j])!) });
+    for (let j = i; j < keys.length; j++) {
+      if (i === j) { correlaciones.push({ a: keys[i], b: keys[j], rho: 1 }); continue; }
+      const [ra, rb] = retornosAlineados(map.get(keys[i])!.pts, map.get(keys[j])!.pts);
+      correlaciones.push({ a: keys[i], b: keys[j], rho: pearson(ra, rb) });
+    }
 
   // Régimen risk-on/off por VIX + dirección DXY.
   const vix = map.get('VIX')?.pts ?? [];
@@ -173,13 +286,17 @@ export async function fxCommodities() {
 export async function comercio() {
   const totales = await query(
     `SELECT t.reporter_id, c.iso3, c.nombre_es AS pais, t.flujo, t.valor_usd::float8 AS valor, t.periodo
-     FROM fact_trade t JOIN dim_country c ON c.id = t.reporter_id WHERE t.partner_m49 = 0`,
+     FROM fact_trade t JOIN dim_country c ON c.id = t.reporter_id
+     WHERE t.partner_m49 = 0
+       AND t.periodo = (SELECT max(periodo) FROM fact_trade x WHERE x.reporter_id = t.reporter_id)`,
   );
   const socios = await query(
     `SELECT t.reporter_id, t.partner_m49, t.valor_usd::float8 AS valor,
             p.nombre_es AS partner_nombre, p.iso3 AS partner_iso3
      FROM fact_trade t LEFT JOIN dim_country p ON p.m49 = t.partner_m49
-     WHERE t.partner_m49 <> 0 AND t.flujo = 'X' ORDER BY t.reporter_id, t.valor_usd DESC`,
+     WHERE t.partner_m49 <> 0 AND t.flujo = 'X'
+       AND t.periodo = (SELECT max(periodo) FROM fact_trade x WHERE x.reporter_id = t.reporter_id)
+     ORDER BY t.reporter_id, t.valor_usd DESC`,
   );
   const ca = await query(
     `SELECT iso3, valor::float8 AS valor FROM v_indicator_latest WHERE codigo = 'current_account'`,
@@ -452,7 +569,7 @@ export async function serieMercado(symbol: string) {
     [symbol],
   );
   const clase = rows[0]?.clase ?? null;
-  const fuente = clase === 'yield' ? 'FRED / ECB / OECD' : symbol === 'EURUSD' ? 'ECB' : 'Yahoo Finance';
+  const fuente = clase === 'yield' ? 'FRED / ECB / OECD' : clase === 'spread' ? 'FRED (ICE BofA)' : symbol === 'EURUSD' ? 'ECB' : 'Yahoo Finance / FRED';
   return {
     id: symbol,
     nombre: NOMBRES[symbol] ?? symbol,
@@ -478,11 +595,15 @@ export async function serieIndicador(iso3: string, codigo: string) {
      ORDER BY t.fecha`,
     [iso3, codigo],
   );
+  // Las proyecciones WEO (años posteriores al actual) van aparte, marcadas.
+  const tope = `${new Date().getUTCFullYear()}-12-31`;
+  const pts = rows.map((r) => ({ fecha: r.fecha as string, valor: Number(r.valor) }));
   return {
     id: `${iso3}:${codigo}`,
     nombre: meta ? `${meta.pais} · ${meta.nombre_es}` : codigo,
     unidad: meta?.unidad ?? '',
     fuente: meta?.fuente ?? '',
-    puntos: rows.map((r) => ({ fecha: r.fecha as string, valor: Number(r.valor) })),
+    puntos: pts.filter((p) => p.fecha <= tope),
+    proyeccion: pts.filter((p) => p.fecha > tope),
   };
 }

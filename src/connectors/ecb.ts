@@ -46,7 +46,7 @@ export async function ingestEcb(): Promise<number> {
 
   // 1) EUR/USD de referencia
   const fx = await fetchJson<SdmxJson>(
-    'https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A?format=jsondata&lastNObservations=60',
+    'https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A?format=jsondata&lastNObservations=600',
   );
   for (const o of parseObs(fx)) rows.push({ symbol: 'EURUSD', clase: 'fx', fecha: o.fecha, valor: o.valor, sourceId: src });
 
@@ -56,7 +56,7 @@ export async function ingestEcb(): Promise<number> {
     if (cid == null) continue;
     try {
       const j = await fetchJson<SdmxJson>(
-        `https://data-api.ecb.europa.eu/service/data/IRS/M.${y.cc}.L.L40.CI.0000.EUR.N.Z?format=jsondata&lastNObservations=12`,
+        `https://data-api.ecb.europa.eu/service/data/IRS/M.${y.cc}.L.L40.CI.0000.EUR.N.Z?format=jsondata&lastNObservations=140`,
         { retries: 2 },
       );
       for (const o of parseObs(j))
